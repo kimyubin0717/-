@@ -1,0 +1,170 @@
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torchvision import datasets, transforms
+import matplotlib.pyplot as plt
+import numpy as np
+
+# 1. 학습 환경 설정 (GPU가 있으면 GPU 사용, 없으면 CPU)
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"현재 사용하는 기기: {device}")
+
+# 2. 데이터 준비 및 전처리 (데이터 증강 분리 적용)
+
+
+train_transform = transforms.Compose([
+    transforms.RandomHorizontalFlip(p=0.5),  # 50% 확률로 좌우 반전
+    transforms.RandomAffine(degrees=5, translate=(0.05, 0.05)),  # -5~5도 회전, 가로/세로 5% 이내 이동
+    transforms.ToTensor(),
+    transforms.Normalize((0.5,), (0.5,))
+])
+
+# 테스트 데이터용 전처리 (원본 유지)
+test_transform = transforms.Compose([
+    transforms.ToTensor(),
+    transforms.Normalize((0.5,), (0.5,))
+])
+
+# 각각 알맞은 전처리(transform)를 할당합니다.
+train_dataset = datasets.FashionMNIST(root='./data', train=True, download=True, transform=train_transform)
+test_dataset = datasets.FashionMNIST(root='./data', train=False, download=True, transform=test_transform)
+
+train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=64, shuffle=True)
+test_loader = torch.utils.data.DataLoader(dataset=test_dataset, batch_size=64, shuffle=False)
+
+
+# 3. CNN 모델 구조 정의
+class FashionCNN(nn.Module):
+    def __init__(self):
+        super(FashionCNN, self).__init__()
+
+        # 첫 번째 합성곱 계층 (1채널 -> 32채널)
+        self.layer1 = nn.Sequential(
+            nn.Conv2d(in_channels=1, out_channels=32, kernel_size=3, padding=1),
+            nn.BatchNorm2d(32),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2, stride=2)  # 28x28 -> 14x14
+        )
+
+        # 두 번째 합성곱 계층 (32채널 -> 64채널)
+        self.layer2 = nn.Sequential(
+            nn.Conv2d(in_channels=32, out_channels=64, kernel_size=3, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2, stride=2)  # 14x14 -> 7x7
+        )
+
+        # 세 번째 합성곱 계층 (64채널 -> 128채널)
+        self.layer3 = nn.Sequential(
+            nn.Conv2d(in_channels=64, out_channels=128, kernel_size=3, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2, stride=2)  # 7x7 -> 3x3
+        )
+
+        # 완전연결 계층 (분류기)
+        self.fc1 = nn.Linear(in_features=128 * 3 * 3, out_features=128)
+
+        
+        self.dropout = nn.Dropout(0.1)
+        self.fc2 = nn.Linear(in_features=128, out_features=10)
+
+    def forward(self, x):
+        out = self.layer1(x)
+        out = self.layer2(out)
+        out = self.layer3(out)
+        out = out.view(out.size(0), -1)  # Flatten
+        out = torch.relu(self.fc1(out))
+        out = self.dropout(out)
+        out = self.fc2(out)
+        return out
+
+
+model = FashionCNN().to(device)
+
+# 4. 손실 함수 및 최적화 기법 설정
+epochs = 40
+criterion = nn.CrossEntropyLoss()
+optimizer = optim.Adam(model.parameters(), lr=0.001)
+
+scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
+
+# 5. 학습(Training) 및 평가(Testing) 루프
+train_acc_history = []
+test_acc_history = []
+
+print("--- 학습 시작 ---")
+for epoch in range(epochs):
+    # [훈련 파트]
+    model.train()
+    correct_train = 0
+    total_train = 0
+    running_loss = 0.0
+
+    for images, labels in train_loader:
+        images, labels = images.to(device), labels.to(device)
+
+        optimizer.zero_grad()
+        outputs = model(images)
+        loss = criterion(outputs, labels)
+        loss.backward()
+        optimizer.step()
+
+        running_loss += loss.item()
+        _, predicted = torch.max(outputs.data, 1)
+        total_train += labels.size(0)
+        correct_train += (predicted == labels).sum().item()
+
+    train_acc = 100 * correct_train / total_train
+    train_acc_history.append(train_acc / 100.0)  # 0~1 스케일로 저장
+
+    #  매 에포크 종료 후 스케줄러 업데이트 (학습률 조정)
+    scheduler.step()
+
+    # [테스트(평가) 파트]
+    model.eval()
+    correct_test = 0
+    total_test = 0
+
+    with torch.no_grad():
+        for images, labels in test_loader:
+            images, labels = images.to(device), labels.to(device)
+            outputs = model(images)
+            _, predicted = torch.max(outputs.data, 1)
+            total_test += labels.size(0)
+            correct_test += (predicted == labels).sum().item()
+
+    test_acc = 100 * correct_test / total_test
+    test_acc_history.append(test_acc / 100.0)  # 0~1 스케일로 저장
+
+    # 현재 적용 중인 학습률 확인용 변수
+    current_lr = optimizer.param_groups[0]['lr']
+
+    print(f"Epoch [{epoch + 1}/{epochs}] - Loss: {running_loss / len(train_loader):.4f} "
+          f"| Train Acc: {train_acc:.2f}% | Test Acc: {test_acc:.2f}% | LR: {current_lr:.6f}")
+
+print("--- 학습 종료 ---")
+
+# ==========================================
+# 6. 훈련 및 테스트 진행 사항 그래프
+# ==========================================
+x_axis = np.arange(1, epochs + 1)
+
+plt.figure(figsize=(8, 6))
+plt.plot(x_axis, train_acc_history, marker='o', label='train', markevery=1)
+plt.plot(x_axis, test_acc_history, marker='s', label='test', markevery=1)
+
+# 목표 정확도 기준선
+plt.axhline(y=0.96, color='blue', linestyle='--', alpha=0.5, label='Target Train (96%)')
+plt.axhline(y=0.93, color='orange', linestyle='--', alpha=0.5, label='Target Test (93%)')
+
+plt.title('Fashion MNIST CNN Accuracy (PyTorch Updated)')
+plt.xlabel('epochs')
+plt.ylabel('accuracy')
+plt.ylim(0.7, 1.0)  # 그래프 가독성을 위해 하한선을 0.7로 조정
+plt.legend(loc='lower right')
+plt.grid(True)
+plt.tight_layout()
+plt.savefig("accuracy_graph_pytorch_updated.png", dpi=150)
+plt.show()
+print("그래프가 'accuracy_graph_pytorch_updated.png'로 저장되었습니다.")
