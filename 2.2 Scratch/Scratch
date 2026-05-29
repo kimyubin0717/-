@@ -135,7 +135,7 @@ patience = 3
 best_test_acc = 0.0
 early_stop_counter = 0
 
-print(f"3. 드롭아웃 및 개선된 평가 방식으로 학습 시작! (최대 {max_epochs} 에폭)")
+print(f"3. 학습 시작! (최대 {max_epochs} 에폭)")
 print("-" * 65)
 
 for epoch in range(max_epochs):
